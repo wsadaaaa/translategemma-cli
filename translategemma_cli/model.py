@@ -196,19 +196,108 @@ def _download_mlx(hf_model_id: str, model_path: Path, quantization_bits: int) ->
     return model_path
 
 
+def _check_bitsandbytes() -> tuple[bool, str | None]:
+    """
+    Check if bitsandbytes is properly installed and functional.
+    
+    Returns:
+        Tuple of (is_available, error_message)
+    """
+    import sys
+    import io
+    
+    # First check if CUDA is available - no point checking bitsandbytes without it
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return False, "No NVIDIA GPU with CUDA detected (CPU-only mode)"
+    except ImportError:
+        return False, "PyTorch not installed"
+    
+    # Suppress all output during bitsandbytes check (it prints warnings on non-CUDA systems)
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
+    
+    try:
+        sys.stdout = io.StringIO()
+        sys.stderr = io.StringIO()
+        
+        # Suppress warnings too
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            
+            try:
+                import bitsandbytes as bnb
+            except ImportError as e:
+                return False, f"bitsandbytes not installed (run: pip install bitsandbytes)"
+            except Exception as e:
+                error_msg = str(e)
+                if "No package metadata" in error_msg or "metadata" in error_msg.lower():
+                    return False, (
+                        "bitsandbytes installation is corrupted. "
+                        "Fix with: pip uninstall bitsandbytes && pip install bitsandbytes --no-cache-dir"
+                    )
+                return False, f"bitsandbytes import error: {e}"
+            
+            # Try to access package metadata to verify installation
+            try:
+                _ = bnb.__version__
+            except AttributeError:
+                return False, (
+                    "bitsandbytes installation is incomplete. "
+                    "Fix with: pip uninstall bitsandbytes && pip install bitsandbytes --no-cache-dir"
+                )
+            
+            # Quick sanity check that bnb can work with CUDA
+            try:
+                _ = bnb.functional
+                return True, None
+            except Exception as e:
+                return False, f"bitsandbytes CUDA initialization failed: {e}"
+                
+    except Exception as e:
+        error_msg = str(e)
+        if "No package metadata" in error_msg or "metadata" in error_msg.lower():
+            return False, (
+                "bitsandbytes installation is corrupted. "
+                "Fix with: pip uninstall bitsandbytes && pip install bitsandbytes --no-cache-dir"
+            )
+        return False, f"bitsandbytes error: {e}"
+    finally:
+        sys.stdout = original_stdout
+        sys.stderr = original_stderr
+
+
 def _download_pytorch(hf_model_id: str, model_path: Path, quantization_bits: int) -> Path:
     """Download and convert model using PyTorch backend."""
     try:
-        from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+        from transformers import AutoModelForCausalLM, AutoTokenizer
         import torch
     except ImportError as e:
         console.print(f"[red]Error importing transformers/torch: {e}[/red]")
         console.print("\n[yellow]To fix, try:[/yellow]")
-        console.print("  pip install transformers torch accelerate bitsandbytes")
+        console.print("  pip install transformers torch accelerate")
         raise SystemExit(1)
     
     # Ensure parent directory exists
     model_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Check if bitsandbytes is available for quantization
+    bnb_available, bnb_error = _check_bitsandbytes()
+    use_quantization = bnb_available and torch.cuda.is_available()
+    
+    if not bnb_available:
+        console.print(f"[yellow]⚠ Quantization unavailable: {bnb_error}[/yellow]")
+        if torch.cuda.is_available():
+            console.print("[yellow]Will download full-precision model instead (requires more VRAM).[/yellow]")
+            console.print("[dim]To enable quantization, fix bitsandbytes:[/dim]")
+            console.print("[dim]  pip uninstall bitsandbytes[/dim]")
+            console.print("[dim]  pip install bitsandbytes --no-cache-dir[/dim]\n")
+        else:
+            console.print("[dim]Quantization requires NVIDIA GPU with CUDA.[/dim]\n")
+    elif not torch.cuda.is_available():
+        console.print("[yellow]⚠ No CUDA GPU detected. Using CPU mode (slower, no quantization).[/yellow]\n")
+        use_quantization = False
     
     console.print(f"[cyan]Downloading {hf_model_id} from HuggingFace...[/cyan]")
     console.print("[dim]This may take a while depending on your connection.[/dim]\n")
@@ -223,45 +312,80 @@ def _download_pytorch(hf_model_id: str, model_path: Path, quantization_bits: int
         task = progress.add_task("Downloading model...", total=None)
         
         try:
-            # Configure quantization
-            if quantization_bits == 4:
-                bnb_config = BitsAndBytesConfig(
-                    load_in_4bit=True,
-                    bnb_4bit_compute_dtype=torch.float16,
-                    bnb_4bit_use_double_quant=True,
-                    bnb_4bit_quant_type="nf4",
-                )
-            else:
-                bnb_config = BitsAndBytesConfig(load_in_8bit=True)
-            
-            # Download tokenizer
+            # Download tokenizer first
             progress.update(task, description="Downloading tokenizer...")
             tokenizer = AutoTokenizer.from_pretrained(hf_model_id)
             tokenizer.save_pretrained(str(model_path))
             
-            # Download model with quantization
-            progress.update(task, description="Downloading model (this takes a while)...")
-            model = AutoModelForCausalLM.from_pretrained(
-                hf_model_id,
-                quantization_config=bnb_config,
-                device_map="auto",
-                trust_remote_code=True,
-            )
+            # Configure model loading based on availability
+            if use_quantization:
+                from transformers import BitsAndBytesConfig
+                
+                if quantization_bits == 4:
+                    bnb_config = BitsAndBytesConfig(
+                        load_in_4bit=True,
+                        bnb_4bit_compute_dtype=torch.float16,
+                        bnb_4bit_use_double_quant=True,
+                        bnb_4bit_quant_type="nf4",
+                    )
+                else:
+                    bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+                
+                progress.update(task, description=f"Downloading model ({quantization_bits}-bit quantized)...")
+                model = AutoModelForCausalLM.from_pretrained(
+                    hf_model_id,
+                    quantization_config=bnb_config,
+                    device_map="auto",
+                    trust_remote_code=True,
+                )
+            else:
+                # Fallback: load without quantization
+                progress.update(task, description="Downloading model (full precision)...")
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+                model = AutoModelForCausalLM.from_pretrained(
+                    hf_model_id,
+                    torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+                    device_map="auto" if device == "cuda" else None,
+                    trust_remote_code=True,
+                    low_cpu_mem_usage=True,
+                )
             
-            progress.update(task, description="Saving quantized model...")
+            progress.update(task, description="Saving model...")
             model.save_pretrained(str(model_path))
             
             progress.update(task, completed=True)
             
         except Exception as e:
+            error_str = str(e)
             console.print(f"\n[red]Error during download: {e}[/red]")
+            
+            # Provide specific troubleshooting based on error
             console.print("\n[yellow]Troubleshooting:[/yellow]")
-            console.print("1. Ensure you're logged in to HuggingFace: huggingface-cli login")
-            console.print(f"2. Accept the model license at: https://huggingface.co/{hf_model_id}")
-            console.print("3. Check available disk space and GPU memory")
+            
+            if "bitsandbytes" in error_str.lower() or "bnb" in error_str.lower():
+                console.print("1. bitsandbytes issue detected. Try reinstalling:")
+                console.print("   pip uninstall bitsandbytes")
+                console.print("   pip install bitsandbytes --no-cache-dir")
+                console.print("2. Or install without quantization (requires more VRAM):")
+                console.print("   pip install translategemma-cli[cpu]")
+            elif "cuda" in error_str.lower() or "gpu" in error_str.lower():
+                console.print("1. CUDA/GPU issue. Check your NVIDIA drivers:")
+                console.print("   nvidia-smi")
+                console.print("2. Ensure PyTorch is installed with CUDA support:")
+                console.print("   pip install torch --index-url https://download.pytorch.org/whl/cu118")
+            else:
+                console.print("1. Ensure you're logged in to HuggingFace: huggingface-cli login")
+                console.print(f"2. Accept the model license at: https://huggingface.co/{hf_model_id}")
+                console.print("3. Check available disk space and GPU memory")
+            
             raise SystemExit(1)
     
-    console.print(f"\n[green]✓ Model ready at {model_path}[/green]\n")
+    if use_quantization:
+        console.print(f"\n[green]✓ Quantized model ready at {model_path}[/green]\n")
+    else:
+        console.print(f"\n[green]✓ Model ready at {model_path}[/green]")
+        console.print("[dim]Note: Running without quantization. Consider fixing bitsandbytes for lower memory usage.[/dim]\n")
+    
     return model_path
 
 
@@ -358,14 +482,35 @@ def _load_pytorch(model_path: Path) -> tuple[Any, Any, Backend]:
         device = "cuda" if torch.cuda.is_available() else "cpu"
         
         tokenizer = AutoTokenizer.from_pretrained(str(model_path))
-        model = AutoModelForCausalLM.from_pretrained(
-            str(model_path),
-            torch_dtype=torch.float16 if device == "cuda" else torch.float32,
-            device_map="auto" if device == "cuda" else None,
-        )
         
-        if device == "cpu":
-            model = model.to(device)
+        # Try loading with bitsandbytes quantization first, fallback to standard loading
+        model = None
+        bnb_available, _ = _check_bitsandbytes()
+        
+        if device == "cuda" and bnb_available:
+            try:
+                # Try loading as quantized model
+                model = AutoModelForCausalLM.from_pretrained(
+                    str(model_path),
+                    device_map="auto",
+                    trust_remote_code=True,
+                )
+            except Exception:
+                # Fallback to standard loading
+                pass
+        
+        if model is None:
+            # Standard loading without quantization
+            model = AutoModelForCausalLM.from_pretrained(
+                str(model_path),
+                torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+                device_map="auto" if device == "cuda" else None,
+                trust_remote_code=True,
+                low_cpu_mem_usage=True,
+            )
+            
+            if device == "cpu":
+                model = model.to(device)
         
         # Warmup: Run a small inference to initialize CUDA kernels
         progress.update(task, description="Warming up...")
