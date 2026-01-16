@@ -6,6 +6,7 @@ Local translation powered by [TranslateGemma](https://huggingface.co/collections
 
 - **Multi-platform** - Works on macOS (Apple Silicon), Linux, and Windows
 - **Multiple model sizes** - Choose from 4b, 12b, or 27b based on your hardware
+- **Multiple backends** - Local (MLX/PyTorch), vLLM, or Ollama
 - **Interactive REPL** - Just run `translate` and start typing
 - **Auto language detection** - No need to specify source/target languages
 - **Two output modes** - Direct (clean translation) or Explain (with context)
@@ -109,6 +110,8 @@ This is a common Cantonese greeting, literally "Have you eaten rice yet?"...
 | `/langs` | List all 55 supported languages |
 | `/model <size>` | Switch model (4b, 12b, 27b) |
 | `/model` | Show current model info |
+| `/backend <type>` | Switch backend (auto, mlx, pytorch, vllm, ollama) |
+| `/backend` | Show backend info |
 | `/config` | Show configuration |
 | `/clear` | Clear screen |
 | `/help` | Show help |
@@ -263,31 +266,60 @@ tests/
 
 > TranslateGemma doesn't have a dedicated Cantonese (`yue`) language code. This CLI uses `zh-Hant-HK` (Traditional Chinese, Hong Kong) for the Chinese side of translations when `yue` is specified.
 
-## Roadmap: vLLM and Ollama Support
+## Backend Options
 
-The current implementation uses MLX (macOS) and PyTorch (Linux/Windows) for model inference directly. Future versions will support high-performance inference servers:
+The CLI supports multiple inference backends:
 
-### vLLM (Planned)
+### Local Backends (Default)
+
+- **MLX** (macOS Apple Silicon) - Native Metal optimization, superior memory efficiency
+- **PyTorch** (Linux/Windows) - CUDA acceleration or CPU fallback
+
+### vLLM Backend
 
 [vLLM](https://docs.vllm.ai/) provides high-throughput inference with continuous batching and PagedAttention for up to 24x faster inference.
 
 ```bash
-# Future usage (when vLLM adds TranslateGemma support)
+# Start vLLM server
+pip install vllm
 vllm serve google/translategemma-27b-it --quantization awq
+
+# Use with CLI
 translate --backend vllm --server http://localhost:8000
+# Or in interactive mode
+> /backend vllm
 ```
 
-### Ollama (Planned)
+### Ollama Backend
 
 [Ollama](https://ollama.ai/) provides a simple interface for running LLMs locally with one-command model downloads.
 
 ```bash
-# Future usage (when Ollama adds TranslateGemma support)
+# Install Ollama from https://ollama.ai/download
+# Pull the model
 ollama pull translategemma:27b
+
+# Use with CLI
 translate --backend ollama
+# Or in interactive mode
+> /backend ollama
 ```
 
-**Status**: Waiting for TranslateGemma model support in vLLM and Ollama.
+### Backend Management
+
+```bash
+# Check backend status
+translate backend status
+
+# Configure vLLM backend
+translate backend vllm --url http://localhost:8000
+
+# Configure Ollama backend
+translate backend ollama
+
+# Switch back to local
+translate backend local
+```
 
 ## Acknowledgements
 

@@ -42,6 +42,8 @@ Running this model locally enables:
 | Linux (CPU) | PyTorch | Supported |
 | Windows (NVIDIA GPU) | PyTorch + CUDA | Supported |
 | Windows (CPU) | PyTorch | Supported |
+| Any (with vLLM server) | vLLM | Supported |
+| Any (with Ollama) | Ollama | Supported |
 
 ### Hardware Requirements by Model Size
 
@@ -869,45 +871,68 @@ ui:
   show_detected_language: true
 ```
 
-### C. Future Work: vLLM and Ollama Support
+### C. Backend Support: vLLM and Ollama
 
-The current implementation uses MLX (macOS) and PyTorch (Linux/Windows) for model inference. Future versions will support inference servers for improved performance:
+The CLI supports multiple inference backends beyond local execution:
 
-#### vLLM Integration (Planned)
+#### vLLM Integration
 
 [vLLM](https://docs.vllm.ai/) provides high-throughput inference with features like:
 - Continuous batching for parallel requests
 - PagedAttention for efficient memory management
 - Up to 24x higher throughput than HuggingFace Transformers
 
-When vLLM adds TranslateGemma support:
 ```bash
 # Start vLLM server
+pip install vllm
 vllm serve google/translategemma-27b-it --quantization awq
 
 # CLI connects to server
 translate --backend vllm --server http://localhost:8000
+
+# Or configure via command
+translate backend vllm --url http://localhost:8000
 ```
 
-#### Ollama Integration (Planned)
+#### Ollama Integration
 
 [Ollama](https://ollama.ai/) provides a simple interface for running LLMs locally with:
 - One-command model downloads
-- Cross-platform support
+- Cross-platform support (macOS, Linux, Windows)
 - OpenAI-compatible API
 
-When Ollama adds TranslateGemma support:
 ```bash
+# Install Ollama from https://ollama.ai/download
 # Pull model via Ollama
 ollama pull translategemma:27b
 
 # CLI uses Ollama backend
 translate --backend ollama
+
+# Or configure via command
+translate backend ollama
 ```
 
-**Status**: Waiting for TranslateGemma model support in vLLM and Ollama. Track progress:
-- vLLM: [GitHub Issues](https://github.com/vllm-project/vllm/issues)
-- Ollama: [Model Library](https://ollama.ai/library)
+#### Backend Selection
+
+The CLI automatically selects the best available backend:
+1. If `--backend` is specified, use that backend
+2. If configured in `config.yaml`, use that backend
+3. Otherwise, use local backend (MLX on macOS Apple Silicon, PyTorch elsewhere)
+
+```yaml
+# config.yaml backend configuration
+backend:
+  type: auto         # auto, mlx, pytorch, vllm, ollama
+  vllm_url: http://localhost:8000
+  ollama_url: http://localhost:11434
+```
+
+Interactive commands for backend switching:
+- `/backend` - Show current backend info
+- `/backend vllm` - Switch to vLLM
+- `/backend ollama` - Switch to Ollama
+- `/backend auto` - Switch to auto (local)
 
 ### D. References
 

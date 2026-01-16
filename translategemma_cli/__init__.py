@@ -24,6 +24,12 @@ from .translator import (
     Translator,
     get_translator,
 )
+from .backends import (
+    VLLMBackend,
+    OllamaBackend,
+    check_vllm_server,
+    check_ollama_server,
+)
 
 __all__ = [
     # Version
@@ -46,4 +52,9 @@ __all__ = [
     # Translation
     "Translator",
     "get_translator",
+    # Backends
+    "VLLMBackend",
+    "OllamaBackend",
+    "check_vllm_server",
+    "check_ollama_server",
 ]

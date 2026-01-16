@@ -14,6 +14,14 @@ DEFAULT_CACHE_DIR = Path.home() / ".cache" / "translate"
 MODEL_SIZES = ("4b", "12b", "27b")
 DEFAULT_MODEL_SIZE = "27b"
 
+# Backend types
+BackendType = Literal["auto", "mlx", "pytorch", "vllm", "ollama"]
+DEFAULT_BACKEND = "auto"
+
+# Default server URLs
+DEFAULT_VLLM_URL = "http://localhost:8000"
+DEFAULT_OLLAMA_URL = "http://localhost:11434"
+
 MODEL_INFO = {
     "4b": {
         "hf_id": "google/translategemma-4b-it",
@@ -116,6 +124,11 @@ def get_default_config_data() -> dict:
         "model": {
             "name": DEFAULT_MODEL_SIZE,
             "quantization": 4,
+        },
+        "backend": {
+            "type": DEFAULT_BACKEND,  # auto, mlx, pytorch, vllm, ollama
+            "vllm_url": DEFAULT_VLLM_URL,
+            "ollama_url": DEFAULT_OLLAMA_URL,
         },
         "translation": {
             "languages": list(DEFAULT_LANGUAGES),
@@ -247,6 +260,43 @@ class Config:
     def max_tokens(self) -> int:
         """Maximum tokens to generate."""
         return self._data.get("translation", {}).get("max_tokens", 512)
+
+    @property
+    def backend_type(self) -> BackendType:
+        """Backend type: auto, mlx, pytorch, vllm, or ollama."""
+        backend = self._data.get("backend", {}).get("type", DEFAULT_BACKEND)
+        valid_backends = ("auto", "mlx", "pytorch", "vllm", "ollama")
+        return backend if backend in valid_backends else DEFAULT_BACKEND
+
+    @backend_type.setter
+    def backend_type(self, value: BackendType) -> None:
+        if value not in ("auto", "mlx", "pytorch", "vllm", "ollama"):
+            raise ValueError("Backend must be 'auto', 'mlx', 'pytorch', 'vllm', or 'ollama'")
+        if "backend" not in self._data:
+            self._data["backend"] = {}
+        self._data["backend"]["type"] = value
+
+    @property
+    def vllm_url(self) -> str:
+        """vLLM server URL."""
+        return self._data.get("backend", {}).get("vllm_url", DEFAULT_VLLM_URL)
+
+    @vllm_url.setter
+    def vllm_url(self, value: str) -> None:
+        if "backend" not in self._data:
+            self._data["backend"] = {}
+        self._data["backend"]["vllm_url"] = value
+
+    @property
+    def ollama_url(self) -> str:
+        """Ollama server URL."""
+        return self._data.get("backend", {}).get("ollama_url", DEFAULT_OLLAMA_URL)
+
+    @ollama_url.setter
+    def ollama_url(self, value: str) -> None:
+        if "backend" not in self._data:
+            self._data["backend"] = {}
+        self._data["backend"]["ollama_url"] = value
 
     @property
     def show_language_indicator(self) -> bool:

@@ -33,6 +33,7 @@ from .config import (
     SUPPORTED_LANGUAGES,
     MODEL_SIZES,
     MODEL_INFO,
+    BackendType,
 )
 from .detector import (
     detect_language,
@@ -50,6 +51,7 @@ from .model import (
     get_backend,
 )
 from .translator import get_translator
+from .backends import check_vllm_server, check_ollama_server, OllamaBackend
 
 app = typer.Typer(
     name="translate",
@@ -86,17 +88,19 @@ def print_help():
     """Print help message."""
     help_text = """
 [bold]Commands:[/bold]
-  [cyan]/to <lang>[/cyan]     - Force translation to language (e.g., /to en, /to yue, /to ja)
-  [cyan]/auto[/cyan]          - Enable auto-detection (default)
-  [cyan]/mode direct[/cyan]   - Direct translation only (no streaming)
-  [cyan]/mode explain[/cyan]  - Include explanations (with streaming)
-  [cyan]/langs[/cyan]         - List all supported languages
-  [cyan]/model <size>[/cyan]  - Switch model (4b, 12b, 27b)
-  [cyan]/model[/cyan]         - Show current model info
-  [cyan]/config[/cyan]        - Show current configuration
-  [cyan]/clear[/cyan]         - Clear screen
-  [cyan]/help[/cyan]          - Show this help
-  [cyan]/quit[/cyan]          - Exit (or /exit, Ctrl+D)
+  [cyan]/to <lang>[/cyan]       - Force translation to language (e.g., /to en, /to yue, /to ja)
+  [cyan]/auto[/cyan]            - Enable auto-detection (default)
+  [cyan]/mode direct[/cyan]     - Direct translation only (no streaming)
+  [cyan]/mode explain[/cyan]    - Include explanations (with streaming)
+  [cyan]/langs[/cyan]           - List all supported languages
+  [cyan]/model <size>[/cyan]    - Switch model (4b, 12b, 27b)
+  [cyan]/model[/cyan]           - Show current model info
+  [cyan]/backend <type>[/cyan]  - Switch backend (auto, mlx, pytorch, vllm, ollama)
+  [cyan]/backend[/cyan]         - Show backend info
+  [cyan]/config[/cyan]          - Show current configuration
+  [cyan]/clear[/cyan]           - Clear screen
+  [cyan]/help[/cyan]            - Show this help
+  [cyan]/quit[/cyan]            - Exit (or /exit, Ctrl+D)
 """
     console.print(help_text)
 
@@ -134,7 +138,20 @@ def print_config():
     console.print(f"  Quantization: [cyan]{config.quantization_bits}-bit[/cyan]")
     console.print(f"  Languages: [cyan]{config.languages[0]} ↔ {config.languages[1]}[/cyan]")
     console.print(f"  Output mode: [cyan]{translator.get_output_mode()}[/cyan]")
-    console.print(f"  Backend: [cyan]{get_backend()}[/cyan]")
+    
+    # Backend info
+    backend_type = config.backend_type
+    actual_backend = translator.backend or get_backend()
+    if backend_type == "auto":
+        console.print(f"  Backend: [cyan]auto[/cyan] → [cyan]{actual_backend}[/cyan]")
+    else:
+        console.print(f"  Backend: [cyan]{backend_type}[/cyan]")
+    
+    # Server URLs if using server backends
+    if backend_type in ("vllm", "auto"):
+        console.print(f"  vLLM URL: [dim]{config.vllm_url}[/dim]")
+    if backend_type in ("ollama", "auto"):
+        console.print(f"  Ollama URL: [dim]{config.ollama_url}[/dim]")
     
     force_target = translator.get_force_target()
     if force_target:
@@ -223,6 +240,56 @@ def handle_command(command: str, translator) -> bool:
     
     elif cmd_lower == "/config":
         print_config()
+    
+    elif cmd_lower.startswith("/backend "):
+        backend = cmd[9:].strip().lower()
+        valid_backends = ("auto", "mlx", "pytorch", "vllm", "ollama")
+        if backend not in valid_backends:
+            console.print(f"[yellow]Unknown backend: {backend}[/yellow]")
+            console.print(f"[dim]Available backends: {', '.join(valid_backends)}[/dim]")
+        else:
+            # Check server availability for vllm/ollama
+            if backend == "vllm":
+                available, error = check_vllm_server(get_config().vllm_url)
+                if not available:
+                    console.print(f"[yellow]⚠ vLLM server not available: {error}[/yellow]")
+                    console.print("[dim]Start vLLM: vllm serve google/translategemma-27b-it[/dim]")
+                    return True
+            elif backend == "ollama":
+                available, error = check_ollama_server(get_config().ollama_url)
+                if not available:
+                    console.print(f"[yellow]⚠ Ollama not available: {error}[/yellow]")
+                    console.print("[dim]Install: https://ollama.ai/download[/dim]")
+                    return True
+            
+            config = get_config()
+            config.backend_type = backend
+            try:
+                translator.ensure_model_loaded(backend_type=backend)
+                console.print(f"[green]Switched to {backend} backend[/green]")
+            except Exception as e:
+                console.print(f"[red]Error switching backend: {e}[/red]")
+    
+    elif cmd_lower == "/backend":
+        config = get_config()
+        translator = get_translator()
+        actual = translator.backend or get_backend()
+        
+        console.print(f"\n[bold]Backend Configuration:[/bold]")
+        console.print(f"  Configured: [cyan]{config.backend_type}[/cyan]")
+        console.print(f"  Active: [cyan]{actual}[/cyan]")
+        
+        if config.backend_type in ("vllm", "auto"):
+            available, _ = check_vllm_server(config.vllm_url)
+            status = "[green]✓ Connected[/green]" if available else "[dim]Not connected[/dim]"
+            console.print(f"  vLLM: {status} ({config.vllm_url})")
+        
+        if config.backend_type in ("ollama", "auto"):
+            available, _ = check_ollama_server(config.ollama_url)
+            status = "[green]✓ Running[/green]" if available else "[dim]Not running[/dim]"
+            console.print(f"  Ollama: {status} ({config.ollama_url})")
+        
+        console.print()
     
     elif cmd_lower == "/clear":
         console.clear()
@@ -347,6 +414,16 @@ def main(
         "--model", "-m",
         help="Model size to use (4b, 12b, 27b)",
     ),
+    backend: Optional[str] = typer.Option(
+        None,
+        "--backend", "-b",
+        help="Backend to use (auto, mlx, pytorch, vllm, ollama)",
+    ),
+    server: Optional[str] = typer.Option(
+        None,
+        "--server", "-s",
+        help="Server URL for vLLM/Ollama (e.g., http://localhost:8000)",
+    ),
     explain: bool = typer.Option(
         False,
         "--explain", "-e",
@@ -396,6 +473,27 @@ def main(
         console.print(f"[red]Invalid model size: {model_size}[/red]")
         console.print(f"[dim]Available sizes: {', '.join(MODEL_SIZES)}[/dim]")
         raise typer.Exit(1)
+    
+    # Validate --backend option
+    valid_backends = ("auto", "mlx", "pytorch", "vllm", "ollama")
+    if backend and backend not in valid_backends:
+        console.print(f"[red]Invalid backend: {backend}[/red]")
+        console.print(f"[dim]Available backends: {', '.join(valid_backends)}[/dim]")
+        raise typer.Exit(1)
+    
+    # Apply backend and server settings
+    config = get_config()
+    if backend:
+        config.backend_type = backend
+    if server:
+        # Determine which server URL to set based on backend
+        if backend == "vllm" or (not backend and "8000" in server):
+            config.vllm_url = server
+        elif backend == "ollama" or (not backend and "11434" in server):
+            config.ollama_url = server
+        else:
+            # Default to vllm
+            config.vllm_url = server
     
     # Handle file input
     if file:
@@ -582,6 +680,113 @@ def init_cmd(
     console.print("  Languages: yue ↔ en (Cantonese ↔ English)")
     console.print("  Mode: direct")
     console.print(f"\n[dim]Edit {config_path} to customize.[/dim]")
+
+
+@app.command("backend")
+def backend_cmd(
+    action: str = typer.Argument(
+        "status",
+        help="Action: status, vllm, ollama",
+    ),
+    url: Optional[str] = typer.Option(
+        None,
+        "--url", "-u",
+        help="Server URL (for vllm/ollama actions)",
+    ),
+):
+    """Manage inference backends (local, vLLM, Ollama)."""
+    config = get_config()
+    
+    if action == "status":
+        console.print("\n[bold]Backend Status:[/bold]")
+        console.print(f"  Configured: [cyan]{config.backend_type}[/cyan]")
+        
+        # Local backends
+        local_backend = get_backend()
+        console.print(f"\n  [bold]Local:[/bold] {local_backend}")
+        
+        # vLLM
+        vllm_url = url or config.vllm_url
+        available, error = check_vllm_server(vllm_url)
+        if available:
+            console.print(f"  [bold]vLLM:[/bold] [green]✓ Running[/green] at {vllm_url}")
+        else:
+            console.print(f"  [bold]vLLM:[/bold] [dim]Not connected[/dim] ({vllm_url})")
+        
+        # Ollama
+        ollama_url = url if url and "11434" in url else config.ollama_url
+        available, error = check_ollama_server(ollama_url)
+        if available:
+            console.print(f"  [bold]Ollama:[/bold] [green]✓ Running[/green] at {ollama_url}")
+            # List available TranslateGemma models
+            backend = OllamaBackend(server_url=ollama_url)
+            models = backend.get_models()
+            tg_models = [m for m in models if "translategemma" in m.lower()]
+            if tg_models:
+                console.print(f"    Models: {', '.join(tg_models)}")
+        else:
+            console.print(f"  [bold]Ollama:[/bold] [dim]Not running[/dim] ({ollama_url})")
+        
+        console.print()
+    
+    elif action == "vllm":
+        vllm_url = url or config.vllm_url
+        available, error = check_vllm_server(vllm_url)
+        
+        if available:
+            console.print(f"[green]✓ vLLM server running at {vllm_url}[/green]")
+            config.backend_type = "vllm"
+            config.vllm_url = vllm_url
+            config.save()
+            console.print("[dim]Backend set to vLLM. Config saved.[/dim]")
+        else:
+            console.print(f"[red]✗ Cannot connect to vLLM at {vllm_url}[/red]")
+            console.print(f"[dim]Error: {error}[/dim]")
+            console.print("\n[bold]To start vLLM:[/bold]")
+            console.print("  pip install vllm")
+            console.print("  vllm serve google/translategemma-27b-it")
+            raise typer.Exit(1)
+    
+    elif action == "ollama":
+        ollama_url = url or config.ollama_url
+        available, error = check_ollama_server(ollama_url)
+        
+        if available:
+            console.print(f"[green]✓ Ollama running at {ollama_url}[/green]")
+            
+            # Check for TranslateGemma models
+            backend = OllamaBackend(server_url=ollama_url)
+            models = backend.get_models()
+            tg_models = [m for m in models if "translategemma" in m.lower()]
+            
+            if tg_models:
+                console.print(f"  Available models: {', '.join(tg_models)}")
+            else:
+                console.print("\n[yellow]TranslateGemma not found in Ollama.[/yellow]")
+                console.print("[dim]Pull with: ollama pull translategemma:27b[/dim]")
+            
+            config.backend_type = "ollama"
+            config.ollama_url = ollama_url
+            config.save()
+            console.print("\n[dim]Backend set to Ollama. Config saved.[/dim]")
+        else:
+            console.print(f"[red]✗ Cannot connect to Ollama at {ollama_url}[/red]")
+            console.print(f"[dim]Error: {error}[/dim]")
+            console.print("\n[bold]To install Ollama:[/bold]")
+            console.print("  https://ollama.ai/download")
+            console.print("\n[bold]Then pull the model:[/bold]")
+            console.print("  ollama pull translategemma:27b")
+            raise typer.Exit(1)
+    
+    elif action == "local":
+        config.backend_type = "auto"
+        config.save()
+        console.print(f"[green]Backend set to local ({get_backend()})[/green]")
+    
+    else:
+        console.print(f"[red]Unknown action: {action}[/red]")
+        console.print("[dim]Available actions: status, vllm, ollama, local[/dim]")
+        raise typer.Exit(1)
 
 
 if __name__ == "__main__":

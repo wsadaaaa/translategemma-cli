@@ -5,9 +5,10 @@ from __future__ import annotations
 import re
 from typing import Any, Generator, Literal
 
-from .config import get_config, OutputMode, SUPPORTED_LANGUAGES
+from .config import get_config, OutputMode, SUPPORTED_LANGUAGES, BackendType
 from .detector import detect_language, get_target_language
-from .model import load_model, Backend
+from .model import load_model, Backend, get_backend as get_local_backend
+from .backends import VLLMBackend, OllamaBackend
 
 
 # Language code mapping to TranslateGemma's supported codes
@@ -17,6 +18,9 @@ LANG_CODE_MAP = {
     # Most other codes match directly
 }
 
+# Extended backend type including server backends
+ExtendedBackend = Literal["mlx", "pytorch", "vllm", "ollama"]
+
 
 class Translator:
     """TranslateGemma translation engine with cross-platform support."""
@@ -24,21 +28,94 @@ class Translator:
     def __init__(self):
         self._model = None
         self._tokenizer = None
-        self._backend: Backend | None = None
+        self._backend: ExtendedBackend | None = None
         self._force_target: str | None = None
         self._output_mode: OutputMode = "direct"
         self._current_model_size: str | None = None
+        
+        # Server backends
+        self._vllm_backend: VLLMBackend | None = None
+        self._ollama_backend: OllamaBackend | None = None
 
-    def ensure_model_loaded(self, model_size: str | None = None) -> None:
+    def _resolve_backend(self, backend_type: BackendType) -> ExtendedBackend:
+        """
+        Resolve the actual backend to use based on configuration.
+        
+        Args:
+            backend_type: Configured backend type (may be "auto")
+            
+        Returns:
+            Resolved backend: mlx, pytorch, vllm, or ollama
+        """
+        if backend_type == "auto":
+            return get_local_backend()  # Returns "mlx" or "pytorch"
+        return backend_type
+
+    def ensure_model_loaded(
+        self,
+        model_size: str | None = None,
+        backend_type: BackendType | None = None,
+    ) -> None:
         """
         Ensure the model is loaded.
         
         Args:
             model_size: Model size to load. If None, uses config default.
+            backend_type: Backend to use. If None, uses config default.
         """
         config = get_config()
         size = model_size or config.model_size
+        backend_cfg = backend_type or config.backend_type
+        resolved_backend = self._resolve_backend(backend_cfg)
         
+        # Check if we need to switch backends
+        if self._backend != resolved_backend:
+            self._model = None
+            self._tokenizer = None
+            self._vllm_backend = None
+            self._ollama_backend = None
+            self._current_model_size = None
+        
+        # For server backends, initialize the client
+        if resolved_backend == "vllm":
+            if self._vllm_backend is None:
+                self._vllm_backend = VLLMBackend(
+                    server_url=config.vllm_url,
+                    model=None,  # Use server default
+                )
+                available, error = self._vllm_backend.is_available()
+                if not available:
+                    raise RuntimeError(f"vLLM server not available: {error}")
+            self._backend = "vllm"
+            self._current_model_size = size
+            self._output_mode = config.output_mode
+            return
+        
+        if resolved_backend == "ollama":
+            if self._ollama_backend is None:
+                ollama_model = OllamaBackend.MODEL_MAP.get(size, f"translategemma:{size}")
+                self._ollama_backend = OllamaBackend(
+                    server_url=config.ollama_url,
+                    model=ollama_model,
+                )
+                available, error = self._ollama_backend.is_available()
+                if not available:
+                    raise RuntimeError(f"Ollama server not available: {error}")
+                
+                # Check if model is available, offer to pull if not
+                if not self._ollama_backend.has_model():
+                    from rich.console import Console
+                    console = Console()
+                    console.print(f"[yellow]Model {ollama_model} not found in Ollama.[/yellow]")
+                    console.print("[dim]Pulling model...[/dim]")
+                    self._ollama_backend.pull_model()
+            
+            self._backend = "ollama"
+            self._current_model_size = size
+            self._output_mode = config.output_mode
+            return
+        
+        # Local backends (mlx, pytorch)
         # Check if we need to switch models
         if self._model is not None and self._current_model_size == size:
             return
@@ -63,9 +140,14 @@ class Translator:
         return self._current_model_size
 
     @property
-    def backend(self) -> Backend | None:
+    def backend(self) -> ExtendedBackend | None:
         """Get the current backend."""
         return self._backend
+    
+    @property
+    def is_server_backend(self) -> bool:
+        """Check if using a server backend (vLLM or Ollama)."""
+        return self._backend in ("vllm", "ollama")
 
     def set_force_target(self, target: str | None) -> None:
         """
@@ -127,6 +209,25 @@ class Translator:
             }
         ]
 
+    def _format_messages_for_server(
+        self, text: str, source_lang: str, target_lang: str
+    ) -> list[dict]:
+        """
+        Format input for server backends (vLLM/Ollama).
+        
+        Server backends use the OpenAI-style message format.
+        We construct a prompt that mimics TranslateGemma's expected input.
+        """
+        source_code = self._map_lang_code(source_lang)
+        target_code = self._map_lang_code(target_lang)
+        
+        # Construct a translation prompt for server backends
+        prompt = f"Translate the following text from {source_code} to {target_code}:\n\n{text}"
+        
+        return [
+            {"role": "user", "content": prompt}
+        ]
+
     def translate(
         self,
         text: str,
@@ -159,21 +260,27 @@ class Translator:
         # Determine target language
         target_lang = force_target or self._force_target or get_target_language(source_lang, config.languages)
         
-        # Format messages
-        messages = self._format_messages(text, source_lang, target_lang)
-        
-        # Apply chat template
-        prompt = self._tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True,
-        )
-        
         # Generate based on backend
-        if self._backend == "mlx":
-            response = self._generate_mlx(prompt, config.max_tokens)
+        if self._backend == "vllm":
+            response = self._generate_vllm(text, source_lang, target_lang, config.max_tokens)
+        elif self._backend == "ollama":
+            response = self._generate_ollama(text, source_lang, target_lang, config.max_tokens)
         else:
-            response = self._generate_pytorch(prompt, config.max_tokens)
+            # Local backends (mlx, pytorch)
+            # Format messages
+            messages = self._format_messages(text, source_lang, target_lang)
+            
+            # Apply chat template
+            prompt = self._tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+            
+            if self._backend == "mlx":
+                response = self._generate_mlx(prompt, config.max_tokens)
+            else:
+                response = self._generate_pytorch(prompt, config.max_tokens)
         
         # Clean response based on mode
         if output_mode == "direct":
@@ -227,6 +334,20 @@ class Translator:
         )
         
         return response
+
+    def _generate_vllm(
+        self, text: str, source_lang: str, target_lang: str, max_tokens: int
+    ) -> str:
+        """Generate response using vLLM server backend."""
+        messages = self._format_messages_for_server(text, source_lang, target_lang)
+        return self._vllm_backend.generate(messages, max_tokens=max_tokens)
+
+    def _generate_ollama(
+        self, text: str, source_lang: str, target_lang: str, max_tokens: int
+    ) -> str:
+        """Generate response using Ollama server backend."""
+        messages = self._format_messages_for_server(text, source_lang, target_lang)
+        return self._ollama_backend.generate(messages, max_tokens=max_tokens)
 
     def _clean_special_tokens(self, text: str) -> str:
         """Remove special tokens from response."""
@@ -395,21 +516,27 @@ class Translator:
         # Determine target language
         target_lang = force_target or self._force_target or get_target_language(source_lang, config.languages)
         
-        # Format messages
-        messages = self._format_messages(text, source_lang, target_lang)
-        
-        # Apply chat template
-        prompt = self._tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True,
-        )
-        
         # Stream based on backend
-        if self._backend == "mlx":
-            yield from self._stream_mlx(prompt, config.max_tokens, source_lang, target_lang)
+        if self._backend == "vllm":
+            yield from self._stream_vllm(text, source_lang, target_lang, config.max_tokens)
+        elif self._backend == "ollama":
+            yield from self._stream_ollama(text, source_lang, target_lang, config.max_tokens)
         else:
-            yield from self._stream_pytorch(prompt, config.max_tokens, source_lang, target_lang)
+            # Local backends (mlx, pytorch)
+            # Format messages
+            messages = self._format_messages(text, source_lang, target_lang)
+            
+            # Apply chat template
+            prompt = self._tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+            
+            if self._backend == "mlx":
+                yield from self._stream_mlx(prompt, config.max_tokens, source_lang, target_lang)
+            else:
+                yield from self._stream_pytorch(prompt, config.max_tokens, source_lang, target_lang)
 
     def _stream_mlx(
         self, prompt: str, max_tokens: int, source_lang: str, target_lang: str
@@ -465,6 +592,28 @@ class Translator:
             yield token, source_lang, target_lang
         
         thread.join()
+
+    def _stream_vllm(
+        self, text: str, source_lang: str, target_lang: str, max_tokens: int
+    ) -> Generator[tuple[str, str, str], None, None]:
+        """Stream generation using vLLM server backend."""
+        messages = self._format_messages_for_server(text, source_lang, target_lang)
+        
+        for token in self._vllm_backend.generate_stream(messages, max_tokens=max_tokens):
+            if "<end_of_turn>" in token or "<eos>" in token:
+                break
+            yield token, source_lang, target_lang
+
+    def _stream_ollama(
+        self, text: str, source_lang: str, target_lang: str, max_tokens: int
+    ) -> Generator[tuple[str, str, str], None, None]:
+        """Stream generation using Ollama server backend."""
+        messages = self._format_messages_for_server(text, source_lang, target_lang)
+        
+        for token in self._ollama_backend.generate_stream(messages, max_tokens=max_tokens):
+            if "<end_of_turn>" in token or "<eos>" in token:
+                break
+            yield token, source_lang, target_lang
 
 
 # Global translator instance
